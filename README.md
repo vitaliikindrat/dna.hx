@@ -7,7 +7,8 @@ forest of plugins grows under.
 
 Each patch adds a capability plugins can use, never a feature: features live
 in plugins. They apply to `424add1` of the Steel branch on their own and
-together, in either order, and come with unit tests.
+together, in any order. The virtual-text and overlay patches come with unit
+tests; the picker patch is exercised through sap.hx.
 
 | Patch | Steel API (in `helix/misc.scm`) | Used by |
 | --- | --- | --- |
