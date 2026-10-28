@@ -1,12 +1,12 @@
 {
-  description = "canopy.hx: generic Steel plugin APIs for Helix, as patches to the Steel branch";
+  description = "dna.hx: generic Steel plugin APIs for Helix, as patches to the Steel branch";
 
   outputs =
     { self }:
     {
       # Each is against mattwparas/helix `steel-event-system` at 424add1 and
       # adds a plugin API, never a feature. They apply on their own and
-      # together, in either order.
+      # together, in any order.
       patches = {
         # add-virtual-lines / add-line-highlight / remove-virtual-text /
         # clear-virtual-text: styled rows below a line, whole-line highlights.
@@ -17,14 +17,18 @@
         # custom-picker: Helix's picker with plugin-chosen rows, a preview file
         # per row and a callback on choice.
         picker = ./patches/helix-picker.patch;
+        # theme-changed hook, theme-style-exact, set-current-theme-style!,
+        # color-mix, color->rgb: plugin scopes inheriting the theme's colours.
+        theme = ./patches/helix-theme.patch;
       };
 
       # All of them, for a Steel helix derivation:
-      #   helix.overrideAttrs (old: { patches = (old.patches or [ ]) ++ canopy.patchList; })
+      #   helix.overrideAttrs (old: { patches = (old.patches or [ ]) ++ dna.patchList; })
       patchList = [
         self.patches.virtual-text
         self.patches.overlays
         self.patches.picker
+        self.patches.theme
       ];
     };
 }

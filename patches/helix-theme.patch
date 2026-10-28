@@ -1,0 +1,230 @@
+diff --git a/helix-term/src/commands/engine/steel/mod.rs b/helix-term/src/commands/engine/steel/mod.rs
+index e017874..87bd068 100644
+--- a/helix-term/src/commands/engine/steel/mod.rs
++++ b/helix-term/src/commands/engine/steel/mod.rs
+@@ -33,7 +33,7 @@
+     },
+     events::{
+         DocumentDidChange, DocumentDidClose, DocumentDidOpen, DocumentFocusLost, DocumentSaved,
+-        SelectionDidChange,
++        SelectionDidChange, ThemeDidChange,
+     },
+     extension::{document_id_to_usize, steel_implementations::CustomStatusElement},
+     graphics::CursorKind,
+@@ -1338,6 +1338,10 @@ fn load_theme_api(engine: &mut Engine, generate_sources: bool) {
+         .register_fn("theme-set-style!", set_style)
+         .register_fn("theme-set-name!", set_theme_name)
+         .register_fn("string->color", string_to_color)
++        .register_fn("theme-style-exact", get_style_exact)
++        .register_fn("color->rgb", color_to_rgb)
++        .register_fn("color-mix", color_mix)
++        .register_fn_with_ctx(CTX, "set-current-theme-style!", set_current_theme_style)
+         .register_fn_with_ctx(CTX, "get-theme", get_theme)
+         .register_fn_with_ctx(CTX, "current-theme", current_theme)
+         .register_fn_with_ctx(CTX, "current-theme-name", current_theme_name);
+@@ -1427,6 +1431,81 @@ fn set_theme_name(theme: &mut SteelTheme, name: String) {
+     theme.0.set_name(name)
+ }
+ 
++// The style the theme itself gives `name`, without falling back to the broader
++// dot separated scopes the way `theme-style` does: #false when it defines none.
++fn get_style_exact(theme: &SteelTheme, name: SteelString) -> Option<helix_view::theme::Style> {
++    theme.0.try_get_exact(name.as_str())
++}
++
++// Set a scope on the theme being drawn, in place: no reload, the name stays, and
++// it lasts until the theme is next set (`theme-changed` fires then).
++fn set_current_theme_style(cx: &mut Context, name: String, style: helix_view::theme::Style) {
++    cx.editor.theme.set(name, style)
++}
++
++// A color as (r g b). Named and indexed colors resolve to the xterm palette, so
++// they are approximate: the terminal may draw them differently. #false for Reset.
++fn color_to_rgb(color: Color) -> Option<Vec<u8>> {
++    const ANSI: [(u8, u8, u8); 16] = [
++        (0, 0, 0),
++        (205, 0, 0),
++        (0, 205, 0),
++        (205, 205, 0),
++        (0, 0, 238),
++        (205, 0, 205),
++        (0, 205, 205),
++        (229, 229, 229),
++        (127, 127, 127),
++        (255, 0, 0),
++        (0, 255, 0),
++        (255, 255, 0),
++        (92, 92, 255),
++        (255, 0, 255),
++        (0, 255, 255),
++        (255, 255, 255),
++    ];
++    let (r, g, b) = match color {
++        Color::Reset => return None,
++        Color::Rgb(r, g, b) => (r, g, b),
++        Color::Black => ANSI[0],
++        Color::Red => ANSI[1],
++        Color::Green => ANSI[2],
++        Color::Yellow => ANSI[3],
++        Color::Blue => ANSI[4],
++        Color::Magenta => ANSI[5],
++        Color::Cyan => ANSI[6],
++        Color::LightGray => ANSI[7],
++        Color::Gray => ANSI[8],
++        Color::LightRed => ANSI[9],
++        Color::LightGreen => ANSI[10],
++        Color::LightYellow => ANSI[11],
++        Color::LightBlue => ANSI[12],
++        Color::LightMagenta => ANSI[13],
++        Color::LightCyan => ANSI[14],
++        Color::White => ANSI[15],
++        Color::Indexed(i @ 0..=15) => ANSI[i as usize],
++        Color::Indexed(i @ 16..=231) => {
++            let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
++            let i = i - 16;
++            (level(i / 36), level(i / 6 % 6), level(i % 6))
++        }
++        Color::Indexed(i) => {
++            let v = 8 + (i - 232) * 10;
++            (v, v, v)
++        }
++    };
++    Some(vec![r, g, b])
++}
++
++// `amount` of `a` over `b` (0.0 is `b`, 1.0 is `a`), as an RGB color; #false if
++// either is Reset.
++fn color_mix(a: Color, b: Color, amount: f64) -> Option<Color> {
++    let (a, b) = (color_to_rgb(a)?, color_to_rgb(b)?);
++    let t = amount.clamp(0.0, 1.0);
++    let mix = |i: usize| (a[i] as f64 * t + b[i] as f64 * (1.0 - t)).round() as u8;
++    Some(Color::Rgb(mix(0), mix(1), mix(2)))
++}
++
+ fn string_to_color(string: SteelString) -> Result<Color, anyhow::Error> {
+     // TODO: Don't expose this directly
+     helix_view::theme::ThemePalette::string_to_rgb(string.as_str()).map_err(anyhow::Error::msg)
+@@ -3461,6 +3540,7 @@ fn register_hook(event_kind: String, callback_fn: SteelVal) -> steel::UnRecovera
+         "document-saved" => register_document_saved(generation, rooted),
+         "document-changed" => register_document_changed(generation, rooted),
+         "document-closed" => register_document_closed(generation, rooted),
++        "theme-changed" => register_theme_changed(generation, rooted),
+         _ => steelerr!(Generic => "Unable to register hook: Unknown event type: {}", event_kind)
+             .into(),
+     }
+@@ -3575,6 +3655,20 @@ fn register_document_closed(
+     Ok(SteelVal::Void).into()
+ }
+ 
++fn register_theme_changed(
++    generation: usize,
++    rooted: RootedSteelVal,
++) -> steel::UnRecoverableResult {
++    register_hook!(move |_event: &mut ThemeDidChange<'_>| {
++        let cloned_func = rooted.value().clone();
++        let callback = construct_callback(generation, cloned_func, []);
++        job::dispatch_blocking_jobs(callback);
++
++        Ok(())
++    });
++    Ok(SteelVal::Void).into()
++}
++
+ fn register_document_opened(
+     generation: usize,
+     rooted: RootedSteelVal,
+diff --git a/helix-term/src/commands/engine/steel/themes.scm b/helix-term/src/commands/engine/steel/themes.scm
+index e5937c7..1fa95aa 100644
+--- a/helix-term/src/commands/engine/steel/themes.scm
++++ b/helix-term/src/commands/engine/steel/themes.scm
+@@ -175,6 +175,10 @@ (provide hashmap->theme
+          theme-set-style!
+          theme-set-name!
+          string->color
++         theme-style-exact
++         color->rgb
++         color-mix
++         set-current-theme-style!
+          get-theme-by-name
+          current-theme
+          current-theme-name)
+diff --git a/helix-term/src/events.rs b/helix-term/src/events.rs
+index 9f1a800..7bb1667 100644
+--- a/helix-term/src/events.rs
++++ b/helix-term/src/events.rs
+@@ -3,7 +3,7 @@
+ use helix_view::events::{
+     ConfigDidChange, DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
+     DocumentFocusLost, DocumentSaved, LanguageServerExited, LanguageServerInitialized,
+-    SelectionDidChange,
++    SelectionDidChange, ThemeDidChange,
+ };
+ 
+ use crate::commands;
+@@ -33,4 +33,5 @@ pub fn register() {
+     register_event::<LanguageServerInitialized>();
+     register_event::<LanguageServerExited>();
+     register_event::<ConfigDidChange>();
++    register_event::<ThemeDidChange>();
+ }
+diff --git a/helix-view/src/editor.rs b/helix-view/src/editor.rs
+index 3bfe5d7..62a2e3e 100644
+--- a/helix-view/src/editor.rs
++++ b/helix-view/src/editor.rs
+@@ -1679,6 +1679,7 @@ fn set_theme_impl(&mut self, theme: Theme, preview: ThemeAction) -> anyhow::Resu
+         }
+ 
+         self._refresh();
++        helix_event::dispatch(crate::events::ThemeDidChange { editor: self });
+         self.config_events.0.send(ConfigEvent::ThemeChanged)?;
+ 
+         Ok(())
+diff --git a/helix-view/src/events.rs b/helix-view/src/events.rs
+index e85a84b..8e61a55 100644
+--- a/helix-view/src/events.rs
++++ b/helix-view/src/events.rs
+@@ -25,6 +25,8 @@
+     // called **after** a document loses focus (but not when its closed)
+     DocumentFocusLost<'a> { editor: &'a mut Editor, doc: DocumentId }
+     DocumentSaved<'a> { editor: &'a mut Editor, doc: DocumentId }
++    // called after the editor's theme is set or previewed
++    ThemeDidChange<'a> { editor: &'a mut Editor }
+ 
+     LanguageServerInitialized<'a> {
+         editor: &'a mut Editor,
+diff --git a/helix-view/src/theme.rs b/helix-view/src/theme.rs
+index b564f5e..7026220 100644
+--- a/helix-view/src/theme.rs
++++ b/helix-view/src/theme.rs
+@@ -458,6 +458,8 @@ pub fn set(&mut self, scope: String, style: Style) {
+                 }
+             }
+         } else {
++            self.scope_index
++                .insert(scope.clone(), Highlight::new(self.scopes.len() as u32));
+             self.scopes.push(scope);
+             self.highlights.push(style);
+         }
+@@ -793,6 +795,22 @@ fn retrieve_color() {
+         );
+     }
+ 
++    #[test]
++    fn set_new_scope_is_found() {
++        let mut theme = Theme::default();
++        let style = Style::new().bg(Color::Rgb(1, 2, 3));
++        theme.set("plugin.scope".to_string(), style);
++        let highlight = theme.find_highlight("plugin.scope.deeper").unwrap();
++        assert_eq!(theme.highlight(highlight), style);
++        assert_eq!(theme.try_get_exact("plugin.scope"), Some(style));
++
++        // setting it again replaces the style behind the same highlight
++        let style = Style::new().bg(Color::Rgb(4, 5, 6));
++        theme.set("plugin.scope".to_string(), style);
++        assert_eq!(theme.find_highlight("plugin.scope"), Some(highlight));
++        assert_eq!(theme.highlight(highlight), style);
++    }
++
+     #[test]
+     #[should_panic(expected = "index out of bounds: the len is 0 but the index is 4278190078")]
+     fn out_of_bounds() {
