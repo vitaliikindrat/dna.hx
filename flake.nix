@@ -14,6 +14,9 @@
         # set-overlays! / set-inline-annotations! / clear-overlays!: styled
         # graphemes over text positions, styled inline virtual text.
         overlays = ./patches/helix-overlays.patch;
+        # custom-picker: Helix's picker with plugin-chosen rows, a preview file
+        # per row and a callback on choice.
+        picker = ./patches/helix-picker.patch;
       };
 
       # All of them, for a Steel helix derivation:
@@ -21,6 +24,7 @@
       patchList = [
         self.patches.virtual-text
         self.patches.overlays
+        self.patches.picker
       ];
     };
 }

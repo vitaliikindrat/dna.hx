@@ -1,0 +1,81 @@
+diff --git a/helix-term/src/commands/engine/steel/mod.rs b/helix-term/src/commands/engine/steel/mod.rs
+index e017874..3f5e62b 100644
+--- a/helix-term/src/commands/engine/steel/mod.rs
++++ b/helix-term/src/commands/engine/steel/mod.rs
+@@ -3739,6 +3739,7 @@ fn configure_lsp_globals() {
+         "prompt",
+         "picker",
+         "#%exp-picker",
++        "custom-picker",
+         "Component::Text",
+         "hx.create-directory",
+     ];
+@@ -4541,6 +4542,68 @@ fn configure_engine_impl(mut engine: Engine) -> Engine {
+         },
+     );
+ 
++    // "custom-picker": Helix's picker with plugin-chosen rows. Each row has a
++    // label (what is shown and filtered on) and a preview file (shown in the
++    // preview pane, highlighted by its extension); choosing a row calls
++    // `callback` with the row's index instead of opening anything.
++    //
++    //   (push-component! (custom-picker title labels preview-paths callback))
++    engine.register_fn(
++        "custom-picker",
++        |title: String,
++         labels: Vec<String>,
++         previews: Vec<String>,
++         callback_fn: SteelVal|
++         -> WrappedDynComponent {
++            struct Row {
++                label: String,
++                preview: PathBuf,
++                index: usize,
++            }
++            let columns = [PickerColumn::new(title, |row: &Row, _: &()| {
++                row.label.as_str().into()
++            })];
++            let rooted = callback_fn.as_rooted();
++            let rows: Vec<Row> = labels
++                .into_iter()
++                .zip(previews)
++                .enumerate()
++                .map(|(index, (label, preview))| Row {
++                    label,
++                    preview: PathBuf::from(preview),
++                    index,
++                })
++                .collect();
++
++            let picker = ui::Picker::new(columns, 0, rows, (), move |cx, row: &Row, _action| {
++                let index = row.index;
++                with_ephemeral_context(cx, |ctx| {
++                    let cloned_func = rooted.value();
++                    enter_engine(|guard| {
++                        if let Err(e) = guard
++                            .with_mut_reference::<Context, Context>(ctx)
++                            .consume_once(move |engine, args| {
++                                let context = args.into_iter().next().unwrap();
++                                engine.update_value(CTX, context);
++                                engine.call_function_with_args(
++                                    cloned_func.clone(),
++                                    vec![SteelVal::IntV(index as isize)],
++                                )
++                            })
++                        {
++                            present_error_inside_engine_context(ctx, guard, e);
++                        }
++                    });
++                })
++            })
++            .with_preview(|_editor, row| Some((PathOrId::Path(&row.preview), None)));
++
++            WrappedDynComponent {
++                inner: Some(Box::new(ui::overlay::overlaid(picker))),
++            }
++        },
++    );
++
+     engine.register_fn("Component::Text", |contents: String| WrappedDynComponent {
+         inner: Some(Box::new(crate::ui::Text::new(contents))),
+     });
